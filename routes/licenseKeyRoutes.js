@@ -19,13 +19,6 @@ function generateLicenseKey() {
   return key.match(/.{1,4}/g).join("-");
 }
 
-// Hàm getTime
-function getLocalTimeInGMTPlus7() {
-  const now = new Date();
-  const localTimeInGMTPlus7 = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-  return localTimeInGMTPlus7;
-}
-
 /**
  * @swagger
  * tags:
@@ -51,20 +44,20 @@ function getLocalTimeInGMTPlus7() {
 // Route get all licenses key
 router.get("/", async (req, res) => {
   try {
-    const licenseKeys = await LicenseKey.find({}, { license_key: 0 });
-    const now = getLocalTimeInGMTPlus7();
+    const licenseKeys = await LicenseKey.find({}, { license_key: 0 })
+      .populate("user_id", "username")
+      .populate("product_id", "product_name");
 
-    licenseKeys.forEach(async (licenseKey) => {
+    const now = new Date();
+
+    for (const licenseKey of licenseKeys) {
       if (!licenseKey.expiration_date) {
         licenseKey.status = "inactive";
-        await licenseKey.save();
-      }
-
-      if (licenseKey.expiration_date < now) {
+      } else if (licenseKey.expiration_date < now) {
         licenseKey.status = "expired";
-        await licenseKey.save();
       }
-    });
+      await licenseKey.save();
+    }
 
     res.json(licenseKeys);
   } catch (error) {
@@ -87,11 +80,43 @@ router.get("/", async (req, res) => {
  *         description: Tên người dùng
  *         schema:
  *           type: string
+ *       - name: product_name
+ *         in: body
+ *         required: true
+ *         description: Tên sản phẩm cần kiểm tra license key
+ *         schema:
+ *           type: object
+ *           properties:
+ *             product_name:
+ *               type: string
+ *               description: Tên sản phẩm
  *     responses:
  *       200:
- *         description: Thông tin license key của người dùng
+ *         description: Thông tin license key của người dùng cho sản phẩm
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 product_name:
+ *                   type: string
+ *                   description: Tên sản phẩm
+ *                 license_key:
+ *                   type: string
+ *                   description: Khóa license
+ *                 status:
+ *                   type: string
+ *                   description: Trạng thái của license key
+ *                 expiration_date:
+ *                   type: string
+ *                   format: date-time
+ *                   description: Ngày hết hạn của license key
+ *       400:
+ *         description: Thiếu username hoặc thông tin không hợp lệ
  *       404:
- *         description: Không tìm thấy người dùng hoặc license key
+ *         description: Không tìm thấy người dùng, license key, hoặc sản phẩm không áp dụng
+ *       401:
+ *         description: License key không hợp lệ
  *       500:
  *         description: Lỗi server
  */
@@ -99,29 +124,54 @@ router.get("/", async (req, res) => {
 // Kiểm tra xem tài khoản đã kích hoạt hay chưa và còn hạn sử dụng không
 router.post("/check/:username", async (req, res) => {
   const username = req.params.username;
+  const { product_name } = req.body;
   try {
-    const user = await User.findOne({ username });
+    if (!username) {
+      return res.status(400).json({ message: "Username is required" });
+    }
+
+    const user = await User.findOne({ username }).populate({
+      path: "products.product",
+      select: "product_name -_id",
+    });
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const userId = user.id;
-
-    const licenseKey = await LicenseKey.findOne({ user_id: userId });
+    const licenseKey = await LicenseKey.findOne({ user_id: user.id });
 
     if (!licenseKey) {
       return res.status(404).json({ error: "User has not been activated" });
     }
 
-    const now = await getLocalTimeInGMTPlus7();
+    const listProducts = user.products.map((product) => product);
+
+    const foundProduct = listProducts.find((item) => item.product.product_name === product_name);
+
+    if (!foundProduct) {
+      return res.status(404).json({ error: "License key does not apply to this product" });
+    }
+
+    const isMatch = bcrypt.compare(foundProduct.license_key, licenseKey.license_key);
+
+    if (!isMatch) {
+      return res.status(401).json({ message: "Invalid license key" });
+    }
+
+    const now = new Date();
 
     if (licenseKey.expiration_date < now) {
       licenseKey.status = "expired";
       await licenseKey.save();
     }
 
-    res.json(licenseKey);
+    res.json({
+      product_name: foundProduct.product.product_name,
+      license_key: foundProduct.license_key,
+      status: licenseKey.status,
+      expiration_date: licenseKey.expiration_date,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -184,17 +234,24 @@ router.post("/check/:username", async (req, res) => {
         return res.status(404).json({ error: "User or Product not found" });
       }
 
+      const existingProduct = user.products.find((item) => item.product.toString() === product_id);
+
+      if (existingProduct) {
+        return res.status(200).json({ message: "User already has a license key for this product" });
+      }
+
       // Mã hoá License Key trước khi lưu vào database
       const saltRounds = Number(process.env.SALT_ROUNDS);
       const rawLicenseKey = generateLicenseKey();
       const salt = await bcrypt.genSalt(saltRounds);
       const hashedLicenseKey = await bcrypt.hash(rawLicenseKey, salt);
 
-      // Múi giờ +7 bằng phút
-      const now = getLocalTimeInGMTPlus7();
-      const expirationDate = new Date(now.getTime() + issued_date * 60 * 5000);
-      // const expirationDate = new Date(now);
-      // expirationDate.setFullYear(now.getFullYear() + issued_date);
+      user.products.push({
+        product: product._id,
+        license_key: rawLicenseKey,
+      });
+
+      await user.save();
 
       const licenseKey = new LicenseKey({
         license_key: hashedLicenseKey,
@@ -288,10 +345,28 @@ router.put("/upgrade/:id", async (req, res) => {
       return res.status(404).json({ error: "License key not found" });
     }
 
-    licenseKey.type_package = new_package;
-    licenseKey.issued_date = issued_date;
+    const dateExpiration = licenseKey.expiration_date;
+    const newDateExpiration = new Date(dateExpiration);
 
-    await licenseKey.save();
+    const issuedDate = licenseKey.issued_date;
+    console.log(dateExpiration);
+    console.log(dateExpiration);
+
+    if (licenseKey.status === "expired") {
+      licenseKey.status = "inactive";
+      licenseKey.type_package = new_package;
+      licenseKey.issued_date = issued_date;
+      licenseKey.active_date = null;
+      licenseKey.expiration_date = null;
+
+      await licenseKey.save();
+    } else {
+      licenseKey.type_package = new_package;
+      licenseKey.issued_date = issuedDate + issued_date;
+      licenseKey.expiration_date = newDateExpiration.setFullYear(newDateExpiration.getFullYear() + issued_date);
+      await licenseKey.save();
+    }
+
     res.status(200).json(licenseKey);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -373,6 +448,10 @@ router.post("/active", async (req, res) => {
 
     const issued_date = licenseKey.issued_date;
 
+    if (licenseKey.status === "active") {
+      return res.status(409).json({ message: "License key is already active" });
+    }
+
     if (!licenseKey) {
       return res.status(400).json({ error: "Invalid license key" });
     }
@@ -383,14 +462,19 @@ router.post("/active", async (req, res) => {
       return res.status(404).json({ error: "The license key does not apply to this username or product" });
     }
 
-    const now = getLocalTimeInGMTPlus7();
+    const now = new Date();
+    const dateNow = new Date(now);
+
+    const expirationDate = new Date(dateNow);
+    expirationDate.setFullYear(expirationDate.getFullYear() + issued_date);
+
     const statusActive = "active";
 
     const updateExpired = await LicenseKey.findOneAndUpdate(
       { user_id: checkUser.id, product_id: checkProduct.id },
       {
-        active_date: now,
-        expiration_date: new Date(new Date().setFullYear(new Date().getFullYear() + issued_date)),
+        active_date: dateNow,
+        expiration_date: expirationDate,
         status: statusActive,
       },
       { new: true },

@@ -25,7 +25,7 @@ const swaggerDefinition = {
       description: "Local server",
     },
     {
-      url: "http://192.168.40.21:3000/api",
+      url: "http://192.168.40.11:3000/api",
       description: "Network server",
     },
   ],
