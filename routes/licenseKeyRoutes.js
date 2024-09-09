@@ -349,8 +349,6 @@ router.put("/upgrade/:id", async (req, res) => {
     const newDateExpiration = new Date(dateExpiration);
 
     const issuedDate = licenseKey.issued_date;
-    console.log(dateExpiration);
-    console.log(dateExpiration);
 
     if (licenseKey.status === "expired") {
       licenseKey.status = "inactive";
@@ -359,6 +357,12 @@ router.put("/upgrade/:id", async (req, res) => {
       licenseKey.active_date = null;
       licenseKey.expiration_date = null;
 
+      await licenseKey.save();
+    } else if (licenseKey.status === "inactive") {
+      licenseKey.type_package = new_package;
+      licenseKey.issued_date = issuedDate + issued_date;
+      licenseKey.active_date = null;
+      licenseKey.expiration_date = null;
       await licenseKey.save();
     } else {
       licenseKey.type_package = new_package;

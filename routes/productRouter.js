@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const Product = require("../models/Product");
+const LicenseKey = require("../models/LicenseKey");
 
 /**
  * @swagger
@@ -169,7 +170,10 @@ router.delete("/delete/:id", async (req, res) => {
   try {
     const deletedProduct = await Product.findByIdAndDelete(id);
     if (!deletedProduct) return res.status(404).json({ message: "Product not found" });
-    res.status(200).json(deletedProduct);
+
+    await LicenseKey.findOneAndDelete({ product_id: id }, { new: true });
+
+    res.status(200).json({ message: "Product deleted successfully" });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
