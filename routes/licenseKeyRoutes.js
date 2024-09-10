@@ -4,6 +4,7 @@ const bcrypt = require("bcrypt");
 const LicenseKey = require("../models/LicenseKey");
 const User = require("../models/User");
 const Product = require("../models/Product");
+const Feature = require("../models/Feature");
 
 const router = express.Router();
 
@@ -220,15 +221,20 @@ router.post("/check/:username", async (req, res) => {
 
   // Route để tạo license key
   router.post("/generate", async (req, res) => {
-    const { user_id, product_id, type_package, issued_date } = req.body;
+    const { user_id, product_id, type_package, license_type, issued_date, allowed_features } = req.body;
 
     if (!["basic", "standard", "premium"].includes(type_package)) {
       return res.status(400).json({ error: "Invalid package type" });
     }
 
+    if (!["perpetual", "annual"].includes(license_type)) {
+      return res.status(400).json({ error: "Invalid license type" });
+    }
+
     try {
       const user = await User.findById(user_id);
       const product = await Product.findById(product_id);
+      const feature = await Feature.find({});
 
       if (!user || !product) {
         return res.status(404).json({ error: "User or Product not found" });
@@ -238,6 +244,16 @@ router.post("/check/:username", async (req, res) => {
 
       if (existingProduct) {
         return res.status(200).json({ message: "User already has a license key for this product" });
+      }
+
+      const featureId = feature.map((item) => item._id.toString());
+
+      const allowedArray = allowed_features.map((item) => item.feature_id);
+
+      const featureIdExists = allowedArray.every((id) => featureId.includes(id));
+
+      if (!featureIdExists) {
+        return res.status(400).json({ error: "Invalid feature" });
       }
 
       // Mã hoá License Key trước khi lưu vào database
@@ -259,6 +275,8 @@ router.post("/check/:username", async (req, res) => {
         user_id: user._id,
         product_id: product._id,
         type_package,
+        license_type,
+        allowed_features,
       });
 
       const licenseKeyRes = new LicenseKey({
@@ -267,12 +285,14 @@ router.post("/check/:username", async (req, res) => {
         user_id: user._id,
         product_id: product._id,
         type_package,
+        license_type,
+        allowed_features,
       });
 
       const updateUser = await User.findByIdAndUpdate(user.id, { license_key: rawLicenseKey }, { new: true });
 
-      await updateUser.save();
       await licenseKey.save();
+      await updateUser.save();
 
       res.status(201).json(licenseKeyRes);
     } catch (error) {
@@ -442,6 +462,7 @@ router.post("/active", async (req, res) => {
     const licenseKeys = await LicenseKey.find();
 
     let licenseKey = null;
+
     for (const key of licenseKeys) {
       const isMatch = await bcrypt.compare(license_key, key.license_key);
       if (isMatch) {
@@ -478,7 +499,7 @@ router.post("/active", async (req, res) => {
       { user_id: checkUser.id, product_id: checkProduct.id },
       {
         active_date: dateNow,
-        expiration_date: expirationDate,
+        expiration_date: licenseKey.license_type === "perpetual" ? null : expirationDate,
         status: statusActive,
       },
       { new: true },

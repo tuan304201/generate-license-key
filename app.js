@@ -5,6 +5,7 @@ var cors = require("cors");
 const licenseKeyRoutes = require("./routes/licenseKeyRoutes");
 const userRouter = require("./routes/userRouter");
 const productRouter = require("./routes/productRouter");
+const featureRouter = require("./routes/featureRouter");
 const authRouter = require("./routes/authRouter");
 const authenticateToken = require("./middleware/authenticateToken");
 const swaggerDocs = require("./swagger");
@@ -28,6 +29,7 @@ app.use("/api", authRouter);
 app.use("/api/license-keys", authenticateToken, licenseKeyRoutes);
 app.use("/api/users", userRouter);
 app.use("/api/products", authenticateToken, productRouter);
+app.use("/api/features", authenticateToken, featureRouter);
 
 // Khởi động server
 const port = process.env.PORT || 3000;
