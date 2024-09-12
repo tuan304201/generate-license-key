@@ -17,26 +17,6 @@ const Feature = require("../models/Feature");
  *     responses:
  *       200:
  *         description: Danh sách tất cả các tính năng
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   _id:
- *                     type: string
- *                     description: ID của tính năng
- *                   feature_name:
- *                     type: string
- *                     description: Tên của tính năng
- *                   description:
- *                     type: string
- *                     description: Mô tả của tính năng
- *                   type_packages:
- *                     type: string
- *                     enum: [basic, standard, premium]
- *                     description: Loại gói mà tính năng này thuộc về
  *       500:
  *         description: Lỗi server
  *         content:
@@ -165,6 +145,7 @@ router.post("/add", async (req, res) => {
     const newFeature = new Feature({
       feature_name,
       description,
+      product_id,
       type_packages: type_package,
     });
 
