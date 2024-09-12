@@ -1,5 +1,6 @@
 const express = require("express");
 const bcrypt = require("bcrypt");
+const moment = require("moment");
 
 const LicenseKey = require("../models/LicenseKey");
 const User = require("../models/User");
@@ -52,9 +53,10 @@ router.get("/", async (req, res) => {
     const now = new Date();
 
     for (const licenseKey of licenseKeys) {
-      if (!licenseKey.expiration_date) {
+      if (licenseKey.active_date === null) {
         licenseKey.status = "inactive";
-      } else if (licenseKey.expiration_date < now) {
+      }
+      if (licenseKey.expiration_date && licenseKey.expiration_date < now && licenseKey.is_perpetual === false) {
         licenseKey.status = "expired";
       }
       await licenseKey.save();
@@ -162,10 +164,15 @@ router.post("/check/:username", async (req, res) => {
 
     const now = new Date();
 
-    if (licenseKey.expiration_date < now) {
-      licenseKey.status = "expired";
-      await licenseKey.save();
+    if (licenseKey.expiration_date === null && licenseKey.is_perpetual) {
+      licenseKey.status = "active";
     }
+
+    if (licenseKey.expiration_date !== null && licenseKey.expiration_date < now) {
+      licenseKey.status = "expired";
+    }
+
+    await licenseKey.save();
 
     res.json({
       product_name: foundProduct.product.product_name,
@@ -191,6 +198,12 @@ router.post("/check/:username", async (req, res) => {
    *         application/json:
    *           schema:
    *             type: object
+   *             required:
+   *               - user_id
+   *               - product_id
+   *               - type_package
+   *               - license_type
+   *               - issued_date
    *             properties:
    *               user_id:
    *                 type: string
@@ -200,19 +213,78 @@ router.post("/check/:username", async (req, res) => {
    *                 description: ID của sản phẩm
    *               type_package:
    *                 type: string
-   *                 enum:
-   *                   - basic
-   *                   - standard
-   *                   - premium
+   *                 enum: [basic, standard, premium]
    *                 description: Loại gói license
+   *               license_type:
+   *                 type: string
+   *                 enum: [perpetual, annual]
+   *                 description: Loại license (vĩnh viễn hoặc hàng năm)
    *               issued_date:
-   *                 type: integer
+   *                 type: number
    *                 description: Số ngày kể từ ngày phát hành
+   *               allowed_features:
+   *                 type: array
+   *                 description: Danh sách các tính năng được phép (chỉ cần cho license_type perpetual)
+   *                 items:
+   *                   type: object
+   *                   properties:
+   *                     feature_id:
+   *                       type: string
+   *                       description: ID của tính năng
+   *                     limits:
+   *                       type: number
+   *                       description: Giới hạn sử dụng của tính năng
    *     responses:
    *       201:
    *         description: License key được tạo thành công
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 license_key:
+   *                   type: string
+   *                   description: License key đã tạo
+   *                 issued_date:
+   *                   type: number
+   *                   description: Số ngày kể từ ngày phát hành
+   *                 user_id:
+   *                   type: string
+   *                   description: ID của người dùng
+   *                 product_id:
+   *                   type: string
+   *                   description: ID của sản phẩm
+   *                 type_package:
+   *                   type: string
+   *                   enum: [basic, standard, premium]
+   *                   description: Loại gói license
+   *                 license_type:
+   *                   type: string
+   *                   enum: [perpetual, annual]
+   *                   description: Loại license
+   *                 is_perpetual:
+   *                   type: boolean
+   *                   description: Có phải license vĩnh viễn không
+   *                 allowed_features:
+   *                   type: array
+   *                   description: Danh sách các tính năng được phép
+   *                   items:
+   *                     type: object
+   *                     properties:
+   *                       feature_id:
+   *                         type: string
+   *                         description: ID của tính năng
+   *                       limits:
+   *                         type: number
+   *                         description: Giới hạn sử dụng của tính năng
+   *                       usage:
+   *                         type: number
+   *                         description: Số lần sử dụng hiện tại
+   *                       status:
+   *                         type: string
+   *                         description: Trạng thái của tính năng
    *       400:
-   *         description: Loại gói không hợp lệ hoặc dữ liệu không hợp lệ
+   *         description: Loại gói không hợp lệ, loại license không hợp lệ, hoặc tính năng không có sẵn cho gói này
    *       404:
    *         description: Không tìm thấy người dùng hoặc sản phẩm
    *       500:
@@ -236,6 +308,8 @@ router.post("/check/:username", async (req, res) => {
       const product = await Product.findById(product_id);
       const feature = await Feature.find({});
 
+      const featuresPackage = feature.filter((item) => item.type_packages === type_package);
+
       if (!user || !product) {
         return res.status(404).json({ error: "User or Product not found" });
       }
@@ -246,14 +320,27 @@ router.post("/check/:username", async (req, res) => {
         return res.status(200).json({ message: "User already has a license key for this product" });
       }
 
-      const featureId = feature.map((item) => item._id.toString());
+      if (license_type === "annual") {
+        processedFeatures = featuresPackage.map((feature) => ({
+          feature_id: feature._id,
+          limits: null,
+          usage: 0,
+          firstUsed: null,
+          lastUsed: null,
+          lastViolationMinute: null,
+          status: "active",
+          consecutiveViolations: 0,
+        }));
+      }
+
+      const featureId = featuresPackage.map((item) => item._id.toString());
 
       const allowedArray = allowed_features.map((item) => item.feature_id);
 
       const featureIdExists = allowedArray.every((id) => featureId.includes(id));
 
       if (!featureIdExists) {
-        return res.status(400).json({ error: "Invalid feature" });
+        return res.status(400).json({ error: "Feature not available for this package" });
       }
 
       // Mã hoá License Key trước khi lưu vào database
@@ -276,7 +363,8 @@ router.post("/check/:username", async (req, res) => {
         product_id: product._id,
         type_package,
         license_type,
-        allowed_features,
+        allowed_features: license_type === "perpetual" ? allowed_features : processedFeatures,
+        is_perpetual: license_type === "perpetual" ? true : false,
       });
 
       const licenseKeyRes = new LicenseKey({
@@ -286,7 +374,8 @@ router.post("/check/:username", async (req, res) => {
         product_id: product._id,
         type_package,
         license_type,
-        allowed_features,
+        allowed_features: license_type === "perpetual" ? allowed_features : processedFeatures,
+        is_perpetual: license_type === "perpetual" ? true : false,
       });
 
       const updateUser = await User.findByIdAndUpdate(user.id, { license_key: rawLicenseKey }, { new: true });
@@ -321,28 +410,101 @@ router.post("/check/:username", async (req, res) => {
  *         application/json:
  *           schema:
  *             type: object
+ *             required:
+ *               - new_package
+ *               - issued_date
+ *               - license_type
  *             properties:
  *               new_package:
  *                 type: string
- *                 enum:
- *                   - basic
- *                   - standard
- *                   - premium
+ *                 enum: [basic, standard, premium]
  *                 description: Gói license mới
  *               issued_date:
  *                 type: integer
  *                 description: Số ngày gia hạn kể từ ngày hiện tại
- *               status:
+ *               license_type:
  *                 type: string
- *                 enum:
- *                   - active
- *                   - inactive
- *                   - expired
+ *                 enum: [perpetual, annual]
+ *                 description: Loại license (vĩnh viễn hoặc hàng năm)
+ *               allowed_features:
+ *                 type: array
+ *                 description: Danh sách các tính năng được phép (chỉ cần cho license_type perpetual)
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     feature_id:
+ *                       type: string
+ *                       description: ID của tính năng
+ *                     limits:
+ *                       type: number
+ *                       description: Giới hạn sử dụng của tính năng
  *     responses:
  *       200:
  *         description: License key được nâng cấp thành công
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 _id:
+ *                   type: string
+ *                   description: ID của license key
+ *                 issued_date:
+ *                   type: number
+ *                   description: Số ngày kể từ ngày phát hành
+ *                 expiration_date:
+ *                   type: string
+ *                   format: date-time
+ *                   description: Ngày hết hạn của license key (nếu có)
+ *                 active_date:
+ *                   type: string
+ *                   format: date-time
+ *                   description: Ngày kích hoạt của license key (nếu có)
+ *                 status:
+ *                   type: string
+ *                   enum: [active, inactive, expired]
+ *                   description: Trạng thái hiện tại của license key
+ *                 type_package:
+ *                   type: string
+ *                   enum: [basic, standard, premium]
+ *                   description: Loại gói license
+ *                 license_type:
+ *                   type: string
+ *                   enum: [perpetual, annual]
+ *                   description: Loại license
+ *                 is_perpetual:
+ *                   type: boolean
+ *                   description: Có phải license vĩnh viễn không
+ *                 user_id:
+ *                   type: string
+ *                   description: ID của người dùng
+ *                 product_id:
+ *                   type: string
+ *                   description: ID của sản phẩm
+ *                 allowed_features:
+ *                   type: array
+ *                   description: Danh sách các tính năng được phép
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       feature_id:
+ *                         type: string
+ *                         description: ID của tính năng
+ *                       limits:
+ *                         type: number
+ *                         description: Giới hạn sử dụng của tính năng
+ *                       usage:
+ *                         type: number
+ *                         description: Số lần sử dụng hiện tại
+ *                       status:
+ *                         type: string
+ *                         description: Trạng thái của tính năng
+ *                 created_at:
+ *                   type: string
+ *                   format: date-time
+ *                   description: Ngày tạo license key
  *       400:
- *         description: Loại gói hoặc status không hợp lệ
+ *         description: Loại gói không hợp lệ, loại license không hợp lệ, hoặc tính năng không có sẵn cho gói này
  *       404:
  *         description: Không tìm thấy license key
  *       500:
@@ -351,47 +513,79 @@ router.post("/check/:username", async (req, res) => {
 
 // Route để nâng cấp gói license key
 router.put("/upgrade/:id", async (req, res) => {
-  const { new_package, issued_date } = req.body;
+  const { new_package, issued_date, license_type, allowed_features } = req.body;
   const id = req.params.id;
 
+  const now = moment();
+
   if (!["basic", "standard", "premium"].includes(new_package)) {
-    return res.status(400).json({ error: "Invalid package type or status" });
+    return res.status(400).json({ error: "Invalid package type" });
+  }
+
+  if (!["perpetual", "annual"].includes(license_type)) {
+    return res.status(400).json({ error: "Invalid license type" });
   }
 
   try {
     const licenseKey = await LicenseKey.findById(id);
-
     if (!licenseKey) {
       return res.status(404).json({ error: "License key not found" });
     }
 
-    const dateExpiration = licenseKey.expiration_date;
-    const newDateExpiration = new Date(dateExpiration);
+    // Fetch features for the new package
+    const features = await Feature.find({ type_packages: new_package });
+    const featureIds = features.map((f) => f._id.toString());
 
-    const issuedDate = licenseKey.issued_date;
+    // Validate allowed_features if provided
+    if (allowed_features && !allowed_features.every((f) => featureIds.includes(f.feature_id))) {
+      return res.status(400).json({ error: "Invalid feature for the new package" });
+    }
 
-    if (licenseKey.status === "expired") {
+    // Update basic information
+    licenseKey.type_package = new_package;
+    licenseKey.license_type = license_type;
+
+    // Update dates based on status and license type
+    if (licenseKey.status === "expired" || licenseKey.status === "inactive") {
       licenseKey.status = "inactive";
-      licenseKey.type_package = new_package;
       licenseKey.issued_date = issued_date;
       licenseKey.active_date = null;
       licenseKey.expiration_date = null;
-
-      await licenseKey.save();
-    } else if (licenseKey.status === "inactive") {
-      licenseKey.type_package = new_package;
-      licenseKey.issued_date = issuedDate + issued_date;
-      licenseKey.active_date = null;
-      licenseKey.expiration_date = null;
-      await licenseKey.save();
-    } else {
-      licenseKey.type_package = new_package;
-      licenseKey.issued_date = issuedDate + issued_date;
-      licenseKey.expiration_date = newDateExpiration.setFullYear(newDateExpiration.getFullYear() + issued_date);
-      await licenseKey.save();
+    }
+    if (licenseKey.status == "active") {
+      if (license_type === "annual") {
+        licenseKey.issued_date = licenseKey.issued_date + issued_date;
+        licenseKey.expiration_date = licenseKey.expiration_date
+          ? new Date(licenseKey.expiration_date.setFullYear(licenseKey.expiration_date.getFullYear() + issued_date))
+          : now.toDate();
+      } else {
+        licenseKey.expiration_date = null;
+      }
     }
 
-    res.status(200).json(licenseKey);
+    // Update allowed features
+    if (license_type === "annual") {
+      licenseKey.allowed_features = features.map((feature) => ({
+        feature_id: feature._id,
+        limits: null,
+        usage: 0,
+        firstUsed: null,
+        lastUsed: null,
+        lastViolationMinute: null,
+        status: "active",
+        consecutiveViolations: 0,
+      }));
+    } else if (allowed_features) {
+      licenseKey.allowed_features = allowed_features;
+    }
+
+    licenseKey.is_perpetual = license_type === "perpetual";
+
+    await licenseKey.save();
+
+    const { license_key, ...licenseKeyResponse } = licenseKey.toObject();
+
+    res.status(200).json(licenseKeyResponse);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
