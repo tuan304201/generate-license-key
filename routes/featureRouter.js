@@ -31,7 +31,10 @@ const Feature = require("../models/Feature");
 // Lấy danh sách tất cả các tính năng (features)
 router.get("/", async (req, res) => {
   try {
-    const features = await Feature.find({});
+    const features = await Feature.find({}).populate({
+      path: "product_id",
+      select: "product_name _id",
+    });
     return res.status(200).json(features);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -213,7 +216,7 @@ router.post("/add", async (req, res) => {
  *                   type: string
  *                 description:
  *                   type: string
- *                 type_package:
+ *                 type_packages:
  *                   type: string
  *                 createdAt:
  *                   type: string
@@ -229,12 +232,16 @@ router.post("/add", async (req, res) => {
 // Cập nhật thông tin của một tính năng
 router.put("/update/:id", async (req, res) => {
   const { id } = req.params;
-  const { feature_name, description, type_package } = req.body;
+  const { feature_name, description, type_packages } = req.body;
+
+  if (!["basic", "standard", "premium"].includes(type_packages)) {
+    return res.status(400).json({ error: "Invalid package type" });
+  }
 
   try {
     const updatedFeature = await Feature.findByIdAndUpdate(
       id,
-      { feature_name, description, type_package },
+      { feature_name, description, type_packages },
       { new: true },
     );
 
