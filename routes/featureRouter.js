@@ -243,7 +243,10 @@ router.put("/update/:id", async (req, res) => {
       id,
       { feature_name, description, type_packages },
       { new: true },
-    );
+    ).populate({
+      path: "product_id",
+      select: "product_name _id",
+    });
 
     if (!updatedFeature) {
       return res.status(404).json({ message: "Feature not found" });
